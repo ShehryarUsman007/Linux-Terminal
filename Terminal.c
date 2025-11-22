@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <ctype.h>
+#include <errno.h>
 
 // display directory for every new line
 void newLine(){
@@ -103,45 +104,89 @@ void freeArgs(char **args) {
     return;
 }
 
+//trim a string
+int trim(char *str) {
+    char *end;
+
+    // Trim leading whitespace
+    while(isspace((unsigned char)*str)){
+        str++;
+    }
+        
+    // All spaces
+    if(*str == 0){
+        return 1;
+    } 
+        
+    // Trim trailing whitespace
+    end = str + strlen(str) - 1;
+    while(end > str && isspace((unsigned char)*end)){
+        end--;
+    }
+
+    // Write new null terminator character
+    end[1] = '\0';
+    return 0;
+}
+
 //check if we exit the terminal
 int terminate(char *input){
     char *copy = strdup(input);
     char *token = strtok(copy, " ");
     if(!strcmp(token, "exit")){
-            free(copy);
-            return 1;
+        free(copy);
+        return 1;
     }
     free(copy);
     return 0;
 }
 
-//trim user input of leading whietspace
-void trim(char *input){
-    while(isspace((unsigned char) * input)){
-        input++;
+//implementation of cd command
+void changeDir(char *buf){
+    char *dir = buf + 3;
+    if(trim(dir)){
+        hDir();
+        return;
+    }else{
+        chdir(dir);
     }
+}
+
+//signal handler
+void handle(){
+    return;
 }
 
 //main function
 int main(void){
     char buf[1024];
-    int pid, status;
+    int status, bytes;
+    pid_t pid;
+    
     hDir();
 
     while(1){
-        newLine();          //running newLine()
+        signal(SIGINT, handle);     //allow read() to be interrupted but does nothing
+        newLine();         
         fflush(stdout);
 
         //reading user input
-        if(fgets(buf, sizeof(buf), stdin) == NULL){
+        if((bytes = (read(STDIN_FILENO, buf, sizeof(buf)))) == -1){
+            if(errno == EINTR){                 //ctrl + c
+                write(STDOUT_FILENO, "\n", 1);
+                continue;
+            }
             perror("Error reading from terminal");
             sleep(2);
             exit(1);
+        }else if (bytes == 0){              //ctrl + d
+            write(STDOUT_FILENO, "\n", 1);
+            exit(0);
         }
         buf[strcspn(buf, "\n")] = '\0'; //removing newline from user input
 
-        //checking if no command was given
-        if(strlen(buf) == 0){
+        //checking if no command was given and clearing whitespace
+        if(trim(buf)){
             continue;
         }
         
@@ -150,25 +195,12 @@ int main(void){
             exit(0);
         }
 
-        //implementation of cd command
-        if (strncmp(buf, "cd", 2) == 0) {
-            char *dir = buf + 3;
-
-            if (strlen(dir) == 0) {
-                dir = getenv("HOME"); 
-                if (dir == NULL) {
-                    perror("Error getting home directory");
-                    continue; 
-                }
-            }
-            
-            if (chdir(dir) == -1) {
-                perror("cd failed");  
-            }
-            free(dir);
-            continue; 
+        //run cd command
+        if (!strncmp(buf, "cd", 2)&& (buf[2] == '\0' || isspace((unsigned char)buf[2]) || buf[2] == '/')){
+            changeDir(buf);
+            continue;
         }
-
+        
         char **args = setArgs(buf);                 //assigning arguemnts from user input to array using setArgs()    
         pid = fork();                               //create child process
         if(pid == -1){

@@ -1,13 +1,18 @@
+
 #define _XOPEN_SOURCE 700 
 
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <ctype.h>
 #include <errno.h>
+
+//GLOBAL VARIBALES
+pid_t pid = -1;
+int processStopped = 0;
 
 // display directory for every new line
 void newLine(){
@@ -74,7 +79,7 @@ void hDir(){
 
 //initalizing array to sort and store user inputted commands
 char **setArgs(char *input){
-    int size = strlen(input), count = 0;
+    int count = 0;
     char** words = NULL;
     char *copy = strdup(input);         //duplicating user input for local manipulation
     char *token = strtok(copy, " \n");  //tokenizing user inputs
@@ -104,12 +109,16 @@ void freeArgs(char **args) {
     return;
 }
 
+int isSpace(unsigned char c){
+    return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v');
+}
+
 //trim a string
 int trim(char *str) {
-    char *end;
+    char *end, *start = str;
 
     // Trim leading whitespace
-    while(isspace((unsigned char)*str)){
+    while(isSpace(*str)){
         str++;
     }
         
@@ -120,12 +129,16 @@ int trim(char *str) {
         
     // Trim trailing whitespace
     end = str + strlen(str) - 1;
-    while(end > str && isspace((unsigned char)*end)){
+    while(end > str && isSpace(*end)){
         end--;
     }
 
-    // Write new null terminator character
-    end[1] = '\0';
+    end[1] = '\0';  // Write new null terminator character
+
+    // Move trimmed string to start if we skipped leading spaces
+    if (str != start) {
+        memmove(start, str, end - str + 2);  // +2 for null terminator
+    }
     return 0;
 }
 
@@ -143,7 +156,7 @@ int terminate(char *input){
 
 //implementation of cd command
 void changeDir(char *buf){
-    char *dir = buf + 3;
+    char *dir = buf + 2;
     if(trim(dir)){
         hDir();
         return;
@@ -152,21 +165,66 @@ void changeDir(char *buf){
     }
 }
 
-//signal handler
-void handle(){
-    return;
+//get the executing process' name
+char *getProcessName(pid_t pid){
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+
+    int fd = open(path, O_RDONLY);	//open file with process name
+    if(fd == -1){
+        return ("Error fetching process name\n");
+    }
+
+    char *command = malloc(1024);
+    ssize_t bytes = read(fd, command, 1023);	//get process name
+    close(fd);
+    if (bytes <= 0){
+        free(command);
+        return ("Error fetching process name\n");
+    }
+
+    command[bytes] = '\0';
+    for (int x = 0; x < bytes; x++){	//replace null with spaces for our string
+        if (command[x] == '\0'){
+            command[x] = ' ';
+        } 
+    }
+    return command;
 }
+
+//signal handler
+void handle(int sig){
+    if (sig == SIGTSTP && pid > 0){
+        printf("\b\b  \b\b");  // Backspace over the ^z
+        fflush(stdout);
+        char *name = getProcessName(pid);	
+        kill(pid, SIGTSTP);		//Kill child
+        processStopped++;
+        printf("\n[%d]+  Stooped\t\t%s\n", processStopped, name);
+        free(name);
+        pid = -1;
+        return;
+    }else if (sig == SIGTSTP){
+        fflush(stdout);
+        return;
+    }else{
+        fflush(stdout);
+        return;
+    }
+}
+
 
 //main function
 int main(void){
     char buf[1024];
-    int status, bytes;
-    pid_t pid;
+    int status;
+    ssize_t bytes;
     
     hDir();
 
     while(1){
         signal(SIGINT, handle);     //allow read() to be interrupted but does nothing
+        signal(SIGTSTP, handle);	
         newLine();         
         fflush(stdout);
 
@@ -196,7 +254,7 @@ int main(void){
         }
 
         //run cd command
-        if (!strncmp(buf, "cd", 2)&& (buf[2] == '\0' || isspace((unsigned char)buf[2]) || buf[2] == '/')){
+        if (!strncmp(buf, "cd", 2)&& (buf[2] == '\0' || isSpace(buf[2]) || buf[2] == '/')){
             changeDir(buf);
             continue;
         }
@@ -213,6 +271,7 @@ int main(void){
             }
         }else{
             wait(&status);  //wait for child process to end
+            pid = -1;
         }
         freeArgs(args);     //free memory held by args[]
     }
